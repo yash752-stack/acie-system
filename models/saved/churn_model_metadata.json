@@ -1,0 +1,21 @@
+{
+  "model_type": "TabTransformer",
+  "input_features": [
+    "age",
+    "country",
+    "acquisition_channel",
+    "cac",
+    "initial_plan",
+    "tenure_months",
+    "avg_logins_3m",
+    "avg_sessions_3m",
+    "avg_session_duration_3m",
+    "avg_features_used_3m",
+    "engagement_score_latest",
+    "payment_failures",
+    "payment_success_rate",
+    "total_support_tickets"
+  ],
+  "test_auc": 0.815546336124615,
+  "test_f1": 0.8377746610565685
+}
