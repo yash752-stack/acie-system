@@ -30,6 +30,22 @@ flowchart LR
     E --> F["FastAPI JSON Response"]
 ```
 
+## Screenshots
+
+These preview assets are generated from the current API contract, saved model metrics, and sample prediction flow.
+
+### API overview
+
+![ACIE API Overview](screenshots/api-overview.png)
+
+### Prediction response preview
+
+![ACIE Prediction Response](screenshots/prediction-response.png)
+
+### Metrics and inference flow
+
+![ACIE Metrics and Inference Flow](screenshots/metrics-flow.png)
+
 ## Project Structure
 
 ```text
@@ -48,6 +64,7 @@ acie-system/
 ├── models/
 │   ├── churn_model_production.py
 │   └── saved/
+├── screenshots/
 ├── tests/
 │   └── test_api.py
 ├── Dockerfile
