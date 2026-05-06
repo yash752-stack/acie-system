@@ -1,0 +1,16 @@
+{
+  "age": 35,
+  "country": "UK",
+  "acquisition_channel": "Organic",
+  "cac": 45.5,
+  "initial_plan": "Basic",
+  "tenure_months": 12,
+  "avg_logins_3m": 25,
+  "avg_sessions_3m": 30,
+  "avg_session_duration_3m": 24.5,
+  "avg_features_used_3m": 6,
+  "engagement_score": 0.72,
+  "payment_failures": 1,
+  "payment_success_rate": 0.96,
+  "support_tickets": 2
+}
