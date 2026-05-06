@@ -1,98 +1,60 @@
-"""
-ACIE System - Production-Grade Deep Churn Prediction Model
-TabTransformer with proper architecture, class weighting, and MLOps tracking
-"""
+"""Training utilities and model definition for ACIE churn prediction."""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-import pandas as pd
-import numpy as np
+from sklearn.metrics import accuracy_score, classification_report, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.metrics import roc_auc_score, f1_score, classification_report, precision_recall_curve
-from scipy import stats
-import joblib
-import json
-import mlflow
-import mlflow.pytorch
 
-# CRITICAL: Set seeds for reproducibility
+try:
+    import mlflow
+    import mlflow.pytorch
+except ImportError:  # pragma: no cover - optional during inference-only environments
+    mlflow = None
+
+LOGGER = logging.getLogger("acie.training")
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_PATH = ROOT_DIR / "data" / "processed" / "feature_matrix.csv"
+ARTIFACT_DIR = ROOT_DIR / "models" / "saved"
+CATEGORICAL_COLUMNS = ["country", "acquisition_channel", "initial_plan"]
+
 torch.manual_seed(42)
 np.random.seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
-print("="*80)
-print("ACIE - TRAINING PRODUCTION-GRADE CHURN PREDICTION MODEL")
-print("="*80)
-
-#============================================================================
-# 1. LOAD DATA
-#============================================================================
-
-print("\n📊 Loading feature matrix...")
-df = pd.read_csv('data/processed/feature_matrix.csv')
-
-# Separate features and target
-X = df.drop(['customer_id', 'churned', 'ltv'], axis=1)
-y = df['churned']
-
-print(f"   Total samples: {len(df)}")
-print(f"   Features: {X.shape[1]}")
-print(f"   Churn rate: {y.mean()*100:.1f}%")
-print(f"   Class imbalance ratio: {(1-y.mean())/y.mean():.2f}:1")
-
-#============================================================================
-# 2. PREPROCESSING
-#============================================================================
-
-print("\n🔧 Preprocessing...")
-
-# Encode categorical variables
-categorical_cols = ['country', 'acquisition_channel', 'initial_plan']
-label_encoders = {}
-
-for col in categorical_cols:
-    if col in X.columns:
-        le = LabelEncoder()
-        X[col] = le.fit_transform(X[col].astype(str))
-        label_encoders[col] = le
-
-# Scale numerical features
-scaler = StandardScaler()
-numerical_cols = [col for col in X.columns if col not in categorical_cols]
-X[numerical_cols] = scaler.fit_transform(X[numerical_cols])
-
-# Stratified split
-X_temp, X_test, y_temp, y_test = train_test_split(
-    X, y, test_size=0.15, random_state=42, stratify=y
-)
-X_train, X_val, y_train, y_val = train_test_split(
-    X_temp, y_temp, test_size=0.18, random_state=42, stratify=y_temp
-)
-
-print(f"   Train: {len(X_train)} ({y_train.mean()*100:.1f}% churn)")
-print(f"   Val: {len(X_val)} ({y_val.mean()*100:.1f}% churn)")
-print(f"   Test: {len(X_test)} ({y_test.mean()*100:.1f}% churn)")
-
-#============================================================================
-# 3. TABTRANSFORMER ARCHITECTURE
-#============================================================================
 
 class TabTransformer(nn.Module):
-    def __init__(self, input_dim, embed_dim=64, num_heads=8, num_layers=3, dropout=0.3):
-        super(TabTransformer, self).__init__()
-        
+    """Transformer-based classifier for tabular churn prediction."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int = 64,
+        num_heads: int = 8,
+        num_layers: int = 3,
+        dropout: float = 0.3,
+    ) -> None:
+        super().__init__()
         self.embedding = nn.Linear(input_dim, embed_dim)
-        
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
             dim_feedforward=256,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, 128),
             nn.ReLU(),
@@ -100,115 +62,169 @@ class TabTransformer(nn.Module):
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1)
+            nn.Linear(64, 1),
         )
-    
-    def forward(self, x):
-        x = self.embedding(x)
-        x = x.unsqueeze(1)
-        x = self.transformer(x)
-        x = x.squeeze(1)
-        x = self.classifier(x)
-        return x
 
-#============================================================================
-# 4. TRAINING
-#============================================================================
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        embedded = self.embedding(inputs)
+        transformed = self.transformer(embedded.unsqueeze(1)).squeeze(1)
+        return self.classifier(transformed)
 
-print("\n🚀 Training model...")
 
-# Convert to tensors
-X_train_t = torch.FloatTensor(X_train.values)
-y_train_t = torch.FloatTensor(y_train.values).reshape(-1, 1)
-X_val_t = torch.FloatTensor(X_val.values)
-y_val_t = torch.FloatTensor(y_val.values).reshape(-1, 1)
-X_test_t = torch.FloatTensor(X_test.values)
-y_test_t = torch.FloatTensor(y_test.values).reshape(-1, 1)
+def load_training_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    dataframe = pd.read_csv(DATA_PATH)
+    features = dataframe.drop(columns=["customer_id", "churned", "ltv"]).copy()
+    target = dataframe["churned"].copy()
+    return dataframe, features, target
 
-# Class weighting
-pos_weight = torch.tensor([(len(y_train) - y_train.sum()) / y_train.sum()])
 
-# Initialize model
-model = TabTransformer(input_dim=X_train.shape[1])
-criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+def preprocess_features(features: pd.DataFrame) -> tuple[pd.DataFrame, StandardScaler, dict[str, LabelEncoder]]:
+    processed = features.copy()
+    encoders: dict[str, LabelEncoder] = {}
 
-# Training loop
-epochs = 50
-batch_size = 128
-best_val_auc = 0
+    for column in CATEGORICAL_COLUMNS:
+        if column in processed.columns:
+            encoder = LabelEncoder()
+            processed[column] = encoder.fit_transform(processed[column].astype(str))
+            encoders[column] = encoder
 
-for epoch in range(epochs):
-    model.train()
-    train_loss = 0
-    
-    for i in range(0, len(X_train_t), batch_size):
-        batch_X = X_train_t[i:i+batch_size]
-        batch_y = y_train_t[i:i+batch_size]
-        
-        optimizer.zero_grad()
-        outputs = model(batch_X)
-        loss = criterion(outputs, batch_y)
-        loss.backward()
-        optimizer.step()
-        
-        train_loss += loss.item()
-    
-    # Validation
+    numerical_columns = [column for column in processed.columns if column not in CATEGORICAL_COLUMNS]
+    scaler = StandardScaler()
+    processed[numerical_columns] = scaler.fit_transform(processed[numerical_columns])
+    return processed, scaler, encoders
+
+
+def split_data(
+    features: pd.DataFrame,
+    target: pd.Series,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    features_temp, features_test, target_temp, target_test = train_test_split(
+        features,
+        target,
+        test_size=0.15,
+        random_state=42,
+        stratify=target,
+    )
+    features_train, features_val, target_train, target_val = train_test_split(
+        features_temp,
+        target_temp,
+        test_size=0.18,
+        random_state=42,
+        stratify=target_temp,
+    )
+    return features_train, features_val, features_test, target_train, target_val, target_test
+
+
+def train_model(
+    features_train: pd.DataFrame,
+    features_val: pd.DataFrame,
+    target_train: pd.Series,
+    target_val: pd.Series,
+) -> TabTransformer:
+    train_tensor = torch.tensor(features_train.values, dtype=torch.float32)
+    val_tensor = torch.tensor(features_val.values, dtype=torch.float32)
+    train_labels = torch.tensor(target_train.values, dtype=torch.float32).reshape(-1, 1)
+
+    model = TabTransformer(input_dim=features_train.shape[1])
+    positive_weight = torch.tensor(
+        [(len(target_train) - target_train.sum()) / max(target_train.sum(), 1)],
+        dtype=torch.float32,
+    )
+    criterion = nn.BCEWithLogitsLoss(pos_weight=positive_weight)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+
+    best_val_auc = 0.0
+    batch_size = 128
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+    for epoch in range(50):
+        model.train()
+        for start in range(0, len(train_tensor), batch_size):
+            batch_x = train_tensor[start : start + batch_size]
+            batch_y = train_labels[start : start + batch_size]
+            optimizer.zero_grad()
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(val_tensor)
+            val_probs = torch.sigmoid(val_outputs).numpy().flatten()
+            val_auc = roc_auc_score(target_val.values, val_probs)
+
+        if val_auc > best_val_auc:
+            best_val_auc = float(val_auc)
+            torch.save(model.state_dict(), ARTIFACT_DIR / "churn_model.pth")
+
+        if (epoch + 1) % 10 == 0:
+            LOGGER.info("Epoch %s/50 | best val AUC %.4f", epoch + 1, best_val_auc)
+
+    model.load_state_dict(torch.load(ARTIFACT_DIR / "churn_model.pth", map_location="cpu", weights_only=True))
     model.eval()
+    return model
+
+
+def evaluate_model(model: TabTransformer, features_test: pd.DataFrame, target_test: pd.Series) -> dict[str, float]:
+    test_tensor = torch.tensor(features_test.values, dtype=torch.float32)
     with torch.no_grad():
-        val_outputs = model(X_val_t)
-        val_probs = torch.sigmoid(val_outputs).numpy().flatten()
-        val_auc = roc_auc_score(y_val.values, val_probs)
-    
-    if (epoch + 1) % 10 == 0:
-        print(f"   Epoch {epoch+1}/{epochs} | Train Loss: {train_loss/len(X_train_t)*batch_size:.4f} | Val AUC: {val_auc:.4f}")
-    
-    if val_auc > best_val_auc:
-        best_val_auc = val_auc
-        torch.save(model.state_dict(), 'models/saved/churn_model.pth')
+        raw_outputs = model(test_tensor)
+        probabilities = torch.sigmoid(raw_outputs).numpy().flatten()
+        predictions = (probabilities > 0.5).astype(int)
 
-#============================================================================
-# 5. EVALUATION
-#============================================================================
+    metrics = {
+        "test_auc": float(roc_auc_score(target_test.values, probabilities)),
+        "test_f1": float(f1_score(target_test.values, predictions)),
+        "test_accuracy": float(accuracy_score(target_test.values, predictions)),
+    }
+    LOGGER.info("Classification report:\n%s", classification_report(target_test.values, predictions))
+    return metrics
 
-print("\n📊 Evaluating on test set...")
 
-model.load_state_dict(torch.load('models/saved/churn_model.pth'))
-model.eval()
+def save_artifacts(
+    feature_columns: list[str],
+    scaler: StandardScaler,
+    encoders: dict[str, LabelEncoder],
+    metrics: dict[str, float],
+) -> None:
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(encoders, ARTIFACT_DIR / "label_encoders.pkl")
+    joblib.dump(scaler, ARTIFACT_DIR / "scaler.pkl")
 
-with torch.no_grad():
-    test_outputs = model(X_test_t)
-    test_probs = torch.sigmoid(test_outputs).numpy().flatten()
-    test_preds = (test_probs > 0.5).astype(int)
+    metadata = {
+        "model_type": "TabTransformer",
+        "input_features": feature_columns,
+        "categorical_columns": CATEGORICAL_COLUMNS,
+        "numerical_columns": [column for column in feature_columns if column not in CATEGORICAL_COLUMNS],
+        **metrics,
+    }
+    with (ARTIFACT_DIR / "churn_model_metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2)
 
-test_auc = roc_auc_score(y_test.values, test_probs)
-test_f1 = f1_score(y_test.values, test_preds)
 
-print(f"\n✅ TEST RESULTS:")
-print(f"   AUC-ROC: {test_auc:.4f}")
-print(f"   F1 Score: {test_f1:.4f}")
-print("\nClassification Report:")
-print(classification_report(y_test.values, test_preds, target_names=['Not Churned', 'Churned']))
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    LOGGER.info("Starting ACIE churn model training pipeline")
+    _, features, target = load_training_data()
+    processed_features, scaler, encoders = preprocess_features(features)
+    train_x, val_x, test_x, train_y, val_y, test_y = split_data(processed_features, target)
 
-#============================================================================
-# 6. SAVE ARTIFACTS
-#============================================================================
+    model = train_model(train_x, val_x, train_y, val_y)
+    metrics = evaluate_model(model, test_x, test_y)
 
-print("\n💾 Saving model artifacts...")
+    if mlflow is not None:
+        with mlflow.start_run(run_name="acie_churn_training"):
+            mlflow.log_param("model_type", "TabTransformer")
+            mlflow.log_param("input_features", processed_features.shape[1])
+            mlflow.log_metrics(metrics)
+            mlflow.pytorch.log_model(model, artifact_path="model")
+    else:
+        LOGGER.warning("mlflow is not installed; skipping experiment tracking")
 
-joblib.dump(label_encoders, 'models/saved/label_encoders.pkl')
-joblib.dump(scaler, 'models/saved/scaler.pkl')
+    save_artifacts(list(processed_features.columns), scaler, encoders, metrics)
+    LOGGER.info("Saved ACIE artifacts with metrics: %s", metrics)
 
-metadata = {
-    'model_type': 'TabTransformer',
-    'input_features': list(X.columns),
-    'test_auc': float(test_auc),
-    'test_f1': float(test_f1)
-}
 
-with open('models/saved/churn_model_metadata.json', 'w') as f:
-    json.dump(metadata, f, indent=2)
-
-print("✅ Model saved successfully!")
-print(f"\n📊 Final Test AUC: {test_auc:.4f}")
+if __name__ == "__main__":
+    main()

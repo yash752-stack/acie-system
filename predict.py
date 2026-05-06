@@ -1,27 +1,42 @@
-import torch
-import pandas as pd
-import joblib
-from churn_model_production import TabTransformer
+"""CLI helper for running a local churn prediction from JSON input."""
 
-# Load model and preprocessing objects
-model = TabTransformer(input_dim=14)  # Adjust based on your features
-model.load_state_dict(torch.load('models/saved/churn_model.pth'))
-model.eval()
+from __future__ import annotations
 
-scaler = joblib.load('models/saved/scaler.pkl')
-label_encoders = joblib.load('models/saved/label_encoders.pkl')
+import argparse
+import json
+from pathlib import Path
 
-# Example prediction
-sample_customer = pd.DataFrame({
-    'age': [35],
-    'cac': [45.50],
-    'tenure_months': [12],
-    'avg_logins_3m': [25],
-    'avg_sessions_3m': [30],
-    # Add all your features here
-})
+from api.schemas import CustomerPredictionRequest
+from api.services.model_service import ModelService
 
-# Preprocess and predict
-# ... (add full preprocessing code)
 
-print("✅ Model ready for predictions!")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a local ACIE churn prediction.")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/sample_input.json"),
+        help="Path to a JSON payload matching the ACIE API contract.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    request = CustomerPredictionRequest.model_validate(payload)
+    service = ModelService()
+    service.load()
+    result = service.predict(request.to_model_features())
+
+    response = {
+        "churn_probability": round(result.probability, 4),
+        "risk_level": result.risk_level,
+        "retention_priority": result.retention_priority,
+        "used_features": result.used_features,
+    }
+    print(json.dumps(response, indent=2))
+
+
+if __name__ == "__main__":
+    main()

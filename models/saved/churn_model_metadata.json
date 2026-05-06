@@ -17,5 +17,24 @@
     "total_support_tickets"
   ],
   "test_auc": 0.815546336124615,
-  "test_f1": 0.8377746610565685
+  "test_f1": 0.8377746610565685,
+  "test_accuracy": 0.7686666666666667,
+  "categorical_columns": [
+    "country",
+    "acquisition_channel",
+    "initial_plan"
+  ],
+  "numerical_columns": [
+    "age",
+    "cac",
+    "tenure_months",
+    "avg_logins_3m",
+    "avg_sessions_3m",
+    "avg_session_duration_3m",
+    "avg_features_used_3m",
+    "engagement_score_latest",
+    "payment_failures",
+    "payment_success_rate",
+    "total_support_tickets"
+  ]
 }
